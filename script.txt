@@ -1,0 +1,1374 @@
+local RS = game:GetService("ReplicatedStorage")
+local P = game:GetService("Players").LocalPlayer
+local VirtualUser = game:GetService("VirtualUser")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local GuiService = game:GetService("GuiService")
+local okVIM, VIM = pcall(function() return game:GetService("VirtualInputManager") end)
+if not okVIM then VIM = nil end
+
+-- Dọn bản cũ nếu chạy lại script
+if getgenv and type(getgenv().Game06Cleanup) == "function" then
+	pcall(getgenv().Game06Cleanup)
+end
+
+local session = ((getgenv and getgenv().Game06Session) or 0) + 1
+if getgenv then
+	getgenv().Game06Session = session
+	getgenv().Game06Running = nil
+end
+
+local connections = {}
+local guiRef = nil
+
+local function alive()
+	return (not getgenv) or getgenv().Game06Session == session
+end
+
+local function trackConn(conn)
+	table.insert(connections, conn)
+	return conn
+end
+
+if getgenv then
+	getgenv().Game06Cleanup = function()
+		for _, c in ipairs(connections) do
+			pcall(function() c:Disconnect() end)
+		end
+		table.clear(connections)
+		if guiRef then
+			pcall(function() guiRef:Destroy() end)
+			guiRef = nil
+		end
+	end
+end
+
+-- Trạng thái và phím tắt mặc định
+local state = {
+	master = true,
+	autoThrow = true,
+	autoUpgrade = true,
+	autoSell = true,
+	autoTapX2 = true,
+	autoClaimIndex = false,
+	autoCollectIndex = false,
+}
+
+local keybinds = {
+	toggleMaster = Enum.KeyCode.F,
+	toggleUI = Enum.KeyCode.RightControl,
+}
+
+local listeningKey = nil
+local uiUpdaters = {}
+local statusSetters = {}
+local updateIndexCounter = function() end
+
+local function isOn(feature)
+	return alive() and state.master and state[feature]
+end
+
+local function setStatus(key, text)
+	if statusSetters[key] then
+		statusSetters[key](text)
+	end
+end
+
+local function tween(obj, props, dur)
+	TweenService:Create(obj, TweenInfo.new(dur or 0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
+end
+
+-- =========================================================
+-- GIAO DIỆN GAME06 HUB
+-- =========================================================
+local function createUI()
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "Game06ModernUI"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 999999
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+	local targets = {}
+	if type(gethui) == "function" then
+		local ok, hui = pcall(gethui)
+		if ok and hui then table.insert(targets, hui) end
+	end
+	table.insert(targets, game:GetService("CoreGui"))
+	table.insert(targets, P:WaitForChild("PlayerGui"))
+
+	for _, parentGui in ipairs(targets) do
+		local ok = pcall(function()
+			for _, oldName in ipairs({ "Game06ModernUI", "Game06ToggleUI", "Game06DumpUI" }) do
+				local old = parentGui:FindFirstChild(oldName)
+				if old then old:Destroy() end
+			end
+			gui.Parent = parentGui
+		end)
+		if ok and gui.Parent then
+			break
+		end
+	end
+
+	if not gui.Parent then
+		warn("[Game06] Khong the gan UI!")
+		return
+	end
+	guiRef = gui
+
+	local PANEL_WIDTH = 305
+	local FULL_HEIGHT = 486
+	local HEADER_HEIGHT = 42
+	local minimized = false
+
+	local main = Instance.new("Frame")
+	main.Name = "Main"
+	main.Size = UDim2.new(0, PANEL_WIDTH, 0, FULL_HEIGHT)
+	main.Position = UDim2.new(0, 24, 0.5, -FULL_HEIGHT / 2)
+	main.BackgroundColor3 = Color3.fromRGB(20, 22, 28)
+	main.BorderSizePixel = 0
+	main.ClipsDescendants = true
+	main.Parent = gui
+	Instance.new("UICorner", main).CornerRadius = UDim.new(0, 12)
+
+	local mainStroke = Instance.new("UIStroke")
+	mainStroke.Color = Color3.fromRGB(52, 58, 74)
+	mainStroke.Thickness = 1.2
+	mainStroke.Parent = main
+
+	local header = Instance.new("Frame")
+	header.Name = "Header"
+	header.Size = UDim2.new(1, 0, 0, HEADER_HEIGHT)
+	header.BackgroundColor3 = Color3.fromRGB(27, 30, 39)
+	header.BorderSizePixel = 0
+	header.Parent = main
+	Instance.new("UICorner", header).CornerRadius = UDim.new(0, 12)
+
+	local headerFix = Instance.new("Frame")
+	headerFix.Size = UDim2.new(1, 0, 0, 12)
+	headerFix.Position = UDim2.new(0, 0, 1, -12)
+	headerFix.BackgroundColor3 = Color3.fromRGB(27, 30, 39)
+	headerFix.BorderSizePixel = 0
+	headerFix.Parent = header
+
+	local statusDot = Instance.new("Frame")
+	statusDot.Size = UDim2.new(0, 9, 0, 9)
+	statusDot.Position = UDim2.new(0, 14, 0.5, -4)
+	statusDot.BackgroundColor3 = state.master and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(231, 76, 60)
+	statusDot.BorderSizePixel = 0
+	statusDot.Parent = header
+	Instance.new("UICorner", statusDot).CornerRadius = UDim.new(1, 0)
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -80, 1, 0)
+	title.Position = UDim2.new(0, 30, 0, 0)
+	title.BackgroundTransparency = 1
+	title.Text = "Game06 Hub"
+	title.TextColor3 = Color3.fromRGB(240, 244, 250)
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 15
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = header
+
+	local minBtn = Instance.new("TextButton")
+	minBtn.Size = UDim2.new(0, 28, 0, 24)
+	minBtn.Position = UDim2.new(1, -36, 0.5, -12)
+	minBtn.BackgroundColor3 = Color3.fromRGB(38, 42, 54)
+	minBtn.Text = "—"
+	minBtn.TextColor3 = Color3.fromRGB(200, 208, 222)
+	minBtn.Font = Enum.Font.GothamBold
+	minBtn.TextSize = 13
+	minBtn.AutoButtonColor = false
+	minBtn.Parent = header
+	Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6)
+
+	minBtn.MouseButton1Click:Connect(function()
+		minimized = not minimized
+		minBtn.Text = minimized and "+" or "—"
+		tween(main, { Size = UDim2.new(0, PANEL_WIDTH, 0, minimized and HEADER_HEIGHT or FULL_HEIGHT) }, 0.2)
+	end)
+
+	-- Kéo thả khung UI
+	local dragging, dragStart, startPos
+	header.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = main.Position
+		end
+	end)
+	trackConn(UIS.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+	end))
+	trackConn(UIS.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end))
+
+	local content = Instance.new("Frame")
+	content.Size = UDim2.new(1, 0, 1, -HEADER_HEIGHT)
+	content.Position = UDim2.new(0, 0, 0, HEADER_HEIGHT)
+	content.BackgroundTransparency = 1
+	content.Parent = main
+
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, 10)
+	pad.PaddingBottom = UDim.new(0, 10)
+	pad.PaddingLeft = UDim.new(0, 12)
+	pad.PaddingRight = UDim.new(0, 12)
+	pad.Parent = content
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 7)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = content
+
+	local function addSectionHeader(sectionTitle, order, rightText)
+		local row = Instance.new("Frame")
+		row.LayoutOrder = order
+		row.Size = UDim2.new(1, 0, 0, 18)
+		row.BackgroundTransparency = 1
+		row.Parent = content
+
+		local left = Instance.new("TextLabel")
+		left.Size = UDim2.new(0.7, 0, 1, 0)
+		left.Position = UDim2.new(0, 2, 0, 2)
+		left.BackgroundTransparency = 1
+		left.Text = sectionTitle
+		left.TextColor3 = Color3.fromRGB(165, 174, 194)
+		left.Font = Enum.Font.GothamBold
+		left.TextSize = 11
+		left.TextXAlignment = Enum.TextXAlignment.Left
+		left.Parent = row
+
+		local right = Instance.new("TextLabel")
+		right.Size = UDim2.new(0.3, -2, 1, 0)
+		right.Position = UDim2.new(0.7, 0, 0, 2)
+		right.BackgroundTransparency = 1
+		right.Text = rightText or ""
+		right.TextColor3 = Color3.fromRGB(125, 134, 154)
+		right.Font = Enum.Font.Code
+		right.TextSize = 11
+		right.TextXAlignment = Enum.TextXAlignment.Right
+		right.Parent = row
+
+		return right
+	end
+
+	local function addToggle(labelText, key, opts)
+		opts = opts or {}
+		local isMaster = opts.isMaster == true
+		local desc = opts.desc
+		local wrapDesc = opts.wrapDesc == true
+		local rowHeight = opts.height or (wrapDesc and 50 or (desc and 44 or (isMaster and 36 or 30)))
+
+		local row = Instance.new("TextButton")
+		row.LayoutOrder = opts.order or 1
+		row.Size = UDim2.new(1, 0, 0, rowHeight)
+		row.BackgroundColor3 = isMaster and Color3.fromRGB(32, 37, 49) or Color3.fromRGB(26, 29, 38)
+		row.Text = ""
+		row.AutoButtonColor = false
+		row.Parent = content
+		Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+
+		if isMaster or desc then
+			local st = Instance.new("UIStroke")
+			st.Color = isMaster and Color3.fromRGB(64, 72, 92) or Color3.fromRGB(46, 52, 68)
+			st.Thickness = 1
+			st.Parent = row
+		end
+
+		local lbl = Instance.new("TextLabel")
+		lbl.Size = desc and UDim2.new(1, -64, 0, 16) or UDim2.new(1, -64, 1, 0)
+		lbl.Position = desc and UDim2.new(0, 11, 0, 6) or UDim2.new(0, 11, 0, 0)
+		lbl.BackgroundTransparency = 1
+		lbl.Text = labelText
+		lbl.TextColor3 = (isMaster or desc) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(215, 222, 235)
+		lbl.Font = (isMaster or desc) and Enum.Font.GothamBold or Enum.Font.GothamMedium
+		lbl.TextSize = isMaster and 14 or 13
+		lbl.TextXAlignment = Enum.TextXAlignment.Left
+		lbl.Parent = row
+
+		if desc then
+			local sub = Instance.new("TextLabel")
+			sub.Size = UDim2.new(1, -64, 0, wrapDesc and 24 or 14)
+			sub.Position = UDim2.new(0, 11, 0, 23)
+			sub.BackgroundTransparency = 1
+			sub.Text = desc
+			sub.TextColor3 = Color3.fromRGB(150, 160, 180)
+			sub.Font = Enum.Font.Gotham
+			sub.TextSize = 10
+			sub.TextXAlignment = Enum.TextXAlignment.Left
+			sub.TextYAlignment = Enum.TextYAlignment.Top
+			sub.TextWrapped = wrapDesc
+			sub.TextTruncate = wrapDesc and Enum.TextTruncate.None or Enum.TextTruncate.AtEnd
+			sub.Parent = row
+
+			statusSetters[key] = function(newText)
+				sub.Text = tostring(newText or "")
+			end
+		end
+
+		local pill = Instance.new("Frame")
+		pill.Size = UDim2.new(0, 38, 0, 20)
+		pill.Position = UDim2.new(1, -48, 0.5, -10)
+		pill.BorderSizePixel = 0
+		pill.Parent = row
+		Instance.new("UICorner", pill).CornerRadius = UDim.new(1, 0)
+
+		local knob = Instance.new("Frame")
+		knob.Size = UDim2.new(0, 14, 0, 14)
+		knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		knob.BorderSizePixel = 0
+		knob.Parent = pill
+		Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+		local function refresh(instant)
+			local on = state[key]
+			local targetColor = on and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(72, 78, 94)
+			local targetPos = on and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+			if instant then
+				pill.BackgroundColor3 = targetColor
+				knob.Position = targetPos
+			else
+				tween(pill, { BackgroundColor3 = targetColor }, 0.16)
+				tween(knob, { Position = targetPos }, 0.16)
+			end
+			if isMaster then
+				tween(statusDot, { BackgroundColor3 = on and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(231, 76, 60) }, 0.16)
+			end
+			updateIndexCounter()
+		end
+
+		refresh(true)
+		uiUpdaters[key] = refresh
+
+		row.MouseButton1Click:Connect(function()
+			state[key] = not state[key]
+			refresh(false)
+			if opts.onToggle then opts.onToggle(state[key]) end
+		end)
+	end
+
+	local function addKeybind(labelText, bindKey, order)
+		local row = Instance.new("Frame")
+		row.LayoutOrder = order
+		row.Size = UDim2.new(1, 0, 0, 28)
+		row.BackgroundTransparency = 1
+		row.Parent = content
+
+		local lbl = Instance.new("TextLabel")
+		lbl.Size = UDim2.new(1, -95, 1, 0)
+		lbl.Position = UDim2.new(0, 4, 0, 0)
+		lbl.BackgroundTransparency = 1
+		lbl.Text = labelText
+		lbl.TextColor3 = Color3.fromRGB(165, 174, 194)
+		lbl.Font = Enum.Font.GothamMedium
+		lbl.TextSize = 12
+		lbl.TextXAlignment = Enum.TextXAlignment.Left
+		lbl.Parent = row
+
+		local btn = Instance.new("TextButton")
+		btn.Size = UDim2.new(0, 88, 0, 24)
+		btn.Position = UDim2.new(1, -88, 0.5, -12)
+		btn.BackgroundColor3 = Color3.fromRGB(34, 38, 49)
+		btn.Text = keybinds[bindKey].Name
+		btn.TextColor3 = Color3.fromRGB(230, 236, 248)
+		btn.Font = Enum.Font.GothamBold
+		btn.TextSize = 11
+		btn.AutoButtonColor = false
+		btn.Parent = row
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+		local stroke = Instance.new("UIStroke")
+		stroke.Color = Color3.fromRGB(60, 67, 86)
+		stroke.Thickness = 1
+		stroke.Parent = btn
+
+		uiUpdaters[bindKey] = function()
+			btn.Text = keybinds[bindKey].Name
+			stroke.Color = Color3.fromRGB(60, 67, 86)
+		end
+
+		btn.MouseButton1Click:Connect(function()
+			listeningKey = bindKey
+			btn.Text = "Bam phim..."
+			stroke.Color = Color3.fromRGB(52, 152, 219)
+		end)
+	end
+
+	addToggle("Bật / Tắt Toàn Bộ", "master", { isMaster = true, order = 1 })
+	addToggle("Auto Ném & Reset", "autoThrow", { order = 2 })
+	addToggle("Auto Mua & Nâng Cấp", "autoUpgrade", { order = 3 })
+	addToggle("Auto Equip & Bán", "autoSell", { order = 4 })
+	addToggle("⚡ Auto Tap X2", "autoTapX2", {
+		desc = "Tự động bấm nút x2 nổi bất ngờ trên màn hình",
+		order = 5,
+	})
+
+	-- Khu vực INDEX
+	local indexCounterLabel = addSectionHeader("INDEX", 6, "0/2")
+	updateIndexCounter = function()
+		local c = (state.autoClaimIndex and 1 or 0) + (state.autoCollectIndex and 1 or 0)
+		indexCounterLabel.Text = tostring(c) .. "/2"
+	end
+
+	addToggle("Auto Claim Index", "autoClaimIndex", {
+		desc = "Off",
+		order = 7,
+		onToggle = function(on)
+			if not on then setStatus("autoClaimIndex", "Off") else setStatus("autoClaimIndex", "Checking...") end
+		end,
+	})
+
+	addToggle("Auto Collect Index", "autoCollectIndex", {
+		desc = "Off",
+		wrapDesc = true,
+		order = 8,
+		onToggle = function(on)
+			if not on then setStatus("autoCollectIndex", "Off") else setStatus("autoCollectIndex", "Scanning missing pets...") end
+		end,
+	})
+
+	local divider = Instance.new("Frame")
+	divider.LayoutOrder = 9
+	divider.Size = UDim2.new(1, 0, 0, 1)
+	divider.BackgroundColor3 = Color3.fromRGB(45, 50, 64)
+	divider.BorderSizePixel = 0
+	divider.Parent = content
+
+	addKeybind("Phím bật/tắt Auto", "toggleMaster", 10)
+	addKeybind("Phím ẩn/hiện Menu", "toggleUI", 11)
+
+	trackConn(UIS.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed or input.UserInputType ~= Enum.UserInputType.Keyboard then
+			return
+		end
+
+		if listeningKey then
+			local target = listeningKey
+			listeningKey = nil
+			if input.KeyCode ~= Enum.KeyCode.Escape then
+				keybinds[target] = input.KeyCode
+			end
+			if uiUpdaters[target] then uiUpdaters[target]() end
+			return
+		end
+
+		if input.KeyCode == keybinds.toggleMaster then
+			state.master = not state.master
+			if uiUpdaters.master then uiUpdaters.master(false) end
+		elseif input.KeyCode == keybinds.toggleUI then
+			main.Visible = not main.Visible
+		end
+	end))
+end
+
+createUI()
+
+-- =========================================================
+-- NẠP MODULE GAME
+-- =========================================================
+local okReq, R, CFG, Foods, Stands, D = pcall(function()
+	local r = require(RS:WaitForChild("Shared"):WaitForChild("Remotes"))
+	local cfg = require(RS:WaitForChild("Config"):WaitForChild("GameConfig"))
+	local foods = require(RS.Config:WaitForChild("FoodsConfig"))
+	local stands = require(RS.Config:WaitForChild("StandsConfig"))
+	local d = require(P:WaitForChild("PlayerScripts"):WaitForChild("Client"):WaitForChild("Controllers"):WaitForChild("DataController"))
+	return r, cfg, foods, stands, d
+end)
+
+if not okReq then
+	warn("[Game06] Loi nap module game:", R)
+	return
+end
+
+local function tryRequire(folder, name)
+	local m = folder:FindFirstChild(name)
+	if not m then return nil end
+	local ok, res = pcall(require, m)
+	return ok and res or nil
+end
+
+local AreasConfig = tryRequire(RS.Config, "AreasConfig")
+local AnimalEconomy = tryRequire(RS.Config, "AnimalEconomy")
+local IndexRewardsConfig = tryRequire(RS.Config, "IndexRewardsConfig")
+local LevelConfig = tryRequire(RS.Config, "LevelConfig")
+
+CFG.AFKRejoin.IdleSeconds = math.huge
+
+-- Helper gọi Remote an toàn (tự thử cả Invoke và Event)
+local function callRemote(name, ...)
+	local ok, res = pcall(R.Invoke, name, ...)
+	if ok then return true, res end
+	local okEv, ev = pcall(R.Event, name)
+	if okEv and ev and ev.FireServer then
+		local args = { ... }
+		local okFire = pcall(function() ev:FireServer(table.unpack(args)) end)
+		return okFire, nil
+	end
+	return false, res
+end
+
+-- =========================================================
+-- HELPER DỮ LIỆU & UI CHUNG
+-- =========================================================
+local playerGui = P:WaitForChild("PlayerGui")
+
+local function getPlayerData()
+	local data = nil
+	pcall(function() data = D:GetData() end)
+	if type(data) ~= "table" then
+		pcall(function() data = D:GetPlayerData() end)
+	end
+	return type(data) == "table" and data or {}
+end
+
+local function isOwnGui(obj)
+	if guiRef and obj:IsDescendantOf(guiRef) then return true end
+	local sg = obj:FindFirstAncestorOfClass("ScreenGui")
+	return sg ~= nil and (sg.Name == "Game06ModernUI" or sg.Name == "Game06ToggleUI")
+end
+
+local function isVisibleOnScreen(obj)
+	if not obj or not obj:IsA("GuiObject") then return false end
+	if obj.AbsoluteSize.X < 10 or obj.AbsoluteSize.Y < 10 then return false end
+
+	local sg = obj:FindFirstAncestorOfClass("ScreenGui")
+	if not sg or not sg.Enabled then return false end
+
+	local cur = obj
+	while cur and cur:IsA("GuiObject") do
+		if not cur.Visible then return false end
+		cur = cur.Parent
+	end
+
+	local cam = workspace.CurrentCamera
+	if cam then
+		local vp = cam.ViewportSize
+		local pos = obj.AbsolutePosition
+		local sz = obj.AbsoluteSize
+		if pos.X + sz.X < 0 or pos.Y + sz.Y < 0 or pos.X > vp.X or pos.Y > vp.Y then
+			return false
+		end
+	end
+	return true
+end
+
+local function waitFeature(sec, feature)
+	local t = 0
+	while t < sec and isOn(feature) do
+		local dt = task.wait(math.min(0.2, sec - t))
+		t = t + dt
+	end
+	return isOn(feature)
+end
+
+local function waitAnyThrow(sec)
+	local t = 0
+	while t < sec and (isOn("autoThrow") or isOn("autoCollectIndex")) do
+		local dt = task.wait(math.min(0.2, sec - t))
+		t = t + dt
+	end
+	return isOn("autoThrow") or isOn("autoCollectIndex")
+end
+
+local function plot()
+	local idx = P:GetAttribute("PlotIndex")
+	if not idx then return nil end
+	return workspace.Plots:FindFirstChild(tostring(idx))
+end
+
+local function lineCFrame()
+	local A = workspace.StarterArea
+	return CFrame.new(A.Position.X, A.Position.Y + A.Size.Y / 2 + 3, A:FindFirstChild("CrossLine").Position.Z - 1)
+end
+
+-- =========================================================
+-- LOGIC INDEX: ĐỌC DỮ LIỆU KHÁM PHÁ, THỨC ĂN SỞ HỮU & KHU VỰC
+-- =========================================================
+local function getDiscoveredSet()
+	local data = getPlayerData()
+	local set = {}
+
+	local function collectNames(tbl, depth)
+		if type(tbl) ~= "table" or depth > 4 then return end
+		for k, v in pairs(tbl) do
+			if type(k) == "number" and type(v) == "string" then
+				set[v] = true
+				set[string.lower(v)] = true
+			elseif type(k) == "string" then
+				if v == true or (type(v) == "number" and v > 0) then
+					set[k] = true
+					set[string.lower(k)] = true
+				elseif type(v) == "table" then
+					-- Nếu bảng con có dạng { Normal = true, Gold = true }
+					local isEntry = false
+					for subK, subV in pairs(v) do
+						if subV == true or (type(subV) == "number" and subV > 0) then
+							isEntry = true
+							if type(subK) == "string" then
+								set[k .. ":" .. subK] = true
+							end
+						end
+					end
+					if isEntry then
+						set[k] = true
+						set[string.lower(k)] = true
+					end
+					collectNames(v, depth + 1)
+				end
+			end
+		end
+	end
+
+	for k, v in pairs(data) do
+		local lk = string.lower(tostring(k))
+		if type(v) == "table" and not lk:find("claim") and not lk:find("reward") then
+			if lk:find("index") or lk:find("discover") or lk:find("seen") or lk:find("catalog") or lk:find("unlock") and lk:find("animal") then
+				collectNames(v, 1)
+			end
+		end
+	end
+
+	return set
+end
+
+local function getClaimedSet()
+	local data = getPlayerData()
+	local claimed = {}
+
+	for k, v in pairs(data) do
+		local lk = string.lower(tostring(k))
+		if type(v) == "table" and (lk:find("claim") or (lk:find("index") and lk:find("reward"))) then
+			for ck, cv in pairs(v) do
+				if type(ck) == "number" and type(cv) == "string" then
+					claimed[cv] = true
+				elseif cv == true or (type(cv) == "number" and cv > 0) then
+					claimed[tostring(ck)] = true
+				end
+			end
+		end
+	end
+
+	return claimed
+end
+
+local function getOwnedFoods()
+	local data = getPlayerData()
+	local owned = {}
+	local eq = D:Get("EquippedFood") or 1
+	owned[eq] = true
+	owned[1] = true
+
+	for k, v in pairs(data) do
+		local lk = string.lower(tostring(k))
+		if lk:find("food") and lk ~= "equippedfood" then
+			if type(v) == "number" then
+				for i = 1, v do owned[i] = true end
+			elseif type(v) == "table" then
+				for fk, fv in pairs(v) do
+					if type(fk) == "number" and type(fv) == "number" then
+						owned[fv] = true
+					elseif fv == true or (type(fv) == "number" and fv > 0) then
+						local idx = tonumber(fk)
+						if idx then owned[idx] = true end
+					end
+				end
+			end
+		end
+	end
+
+	-- Dự phòng: mọi thức ăn <= EquippedFood thường đều đã sở hữu
+	if type(eq) == "number" then
+		for i = 1, eq do owned[i] = true end
+	end
+
+	return owned
+end
+
+local function getOrderedAreas()
+	local list = {}
+	if not AreasConfig then return list end
+
+	local src = AreasConfig.List or AreasConfig.All
+	if type(src) == "table" then
+		for k, v in pairs(src) do
+			if type(v) == "table" then
+				local key = v.Key or (type(k) == "string" and k) or v.Name
+				local playable = true
+				if type(AreasConfig.IsPlayable) == "function" and key then
+					local ok, p = pcall(AreasConfig.IsPlayable, key)
+					if ok and p == false then playable = false end
+				end
+				if playable then
+					table.insert(list, v)
+				end
+			end
+		end
+	end
+
+	table.sort(list, function(a, b)
+		local da = a.StartDistance or a.Index or 0
+		local db = b.StartDistance or b.Index or 0
+		return da < db
+	end)
+	return list
+end
+
+local function getAreaAnimals(area)
+	local animals = {}
+	if not AnimalEconomy then return animals end
+
+	local key = area.Key or area.Name
+	local got = nil
+	if type(AnimalEconomy.GetAreaAnimals) == "function" then
+		local ok, res = pcall(AnimalEconomy.GetAreaAnimals, key)
+		if ok and type(res) == "table" and next(res) ~= nil then
+			got = res
+		end
+	end
+
+	if got then
+		for k, v in pairs(got) do
+			if type(v) == "string" then
+				local info = type(AnimalEconomy.Get) == "function" and AnimalEconomy.Get(v) or {}
+				table.insert(animals, { Name = v, Rarity = info and info.Rarity, Rank = info and info.Rank or 0, Info = info })
+			elseif type(v) == "table" then
+				local name = v.Name or v.Key or v.Id or (type(k) == "string" and k)
+				if name then
+					table.insert(animals, { Name = name, Rarity = v.Rarity, Rank = v.Rank or 0, Info = v })
+				end
+			end
+		end
+	elseif type(AnimalEconomy.List) == "table" then
+		for k, v in pairs(AnimalEconomy.List) do
+			if type(v) == "table" and (v.Area == key or v.Area == area.Name or v.Area == area.Index) then
+				local name = v.Name or v.Key or v.Id or tostring(k)
+				table.insert(animals, { Name = name, Rarity = v.Rarity, Rank = v.Rank or 0, Info = v })
+			end
+		end
+	end
+
+	table.sort(animals, function(a, b)
+		return (a.Rank or 0) < (b.Rank or 0)
+	end)
+	return animals
+end
+
+-- Đánh giá thức ăn sở hữu nào phù hợp với pet còn thiếu (dựa trên Bait / Rarity / Tier)
+local function scoreFoodForAnimal(food, animal, area)
+	if type(food) ~= "table" then return 0 end
+	local rarity = animal.Rarity and tostring(animal.Rarity) or ""
+	local lRarity = string.lower(rarity)
+	local lName = string.lower(tostring(animal.Name or ""))
+	local lArea = string.lower(tostring(area.Key or area.Name or ""))
+	local bait = food.Bait
+
+	if type(bait) == "table" then
+		-- Dạng bảng trọng số { Common = 50, Rare = 30... } hoặc danh sách
+		local direct = bait[rarity] or bait[animal.Rarity] or bait[animal.Name]
+		if type(direct) == "number" then
+			return direct > 0 and (1000 + direct) or 0
+		elseif direct == true then
+			return 1500
+		end
+		local hasStringList = false
+		for bk, bv in pairs(bait) do
+			if type(bk) == "number" and type(bv) == "string" then
+				hasStringList = true
+				local lb = string.lower(bv)
+				if lb == lName or lb == lRarity or lb == lArea then
+					return 1500
+				end
+			elseif type(bk) == "string" and (string.lower(bk) == lRarity or string.lower(bk) == lName) then
+				if type(bv) == "number" then return bv > 0 and (1000 + bv) or 0 end
+				if bv == true then return 1500 end
+			end
+		end
+		-- Nếu Bait là bảng lọc nhưng không có mục phù hợp với pet này
+		if hasStringList or next(bait) ~= nil then
+			return 0
+		end
+	elseif type(bait) == "string" and bait ~= "" then
+		local lb = string.lower(bait)
+		if lb == lName or lb == lRarity or lb == lArea or lb == "all" or lb == "any" then
+			return 1500
+		end
+		return 0
+	end
+
+	-- Dự phòng theo Rarity / Tier của thức ăn
+	if food.Rarity and lRarity ~= "" and string.lower(tostring(food.Rarity)) == lRarity then
+		return 800 + (food.Index or 0)
+	end
+	return 100 + (food.Tier or food.Index or 0)
+end
+
+local function findBestOwnedFood(animal, area, ownedFoods)
+	local bestIdx, bestScore = nil, 0
+	for foodIdx in pairs(ownedFoods) do
+		local food = Foods.Get and Foods.Get(foodIdx) or (Foods.GetAny and Foods.GetAny(foodIdx))
+		if food then
+			local sc = scoreFoodForAnimal(food, animal, area)
+			if sc > bestScore then
+				bestScore = sc
+				bestIdx = foodIdx
+			end
+		end
+	end
+	return bestIdx, bestScore
+end
+
+-- Ước lượng tầm ném tối đa của nhân vật
+local observedMaxDistance = nil
+local function getEstimatedMaxDistance()
+	if observedMaxDistance and observedMaxDistance > 0 then
+		return observedMaxDistance
+	end
+	local data = getPlayerData()
+	for _, k in ipairs({ "MaxDistance", "BestDistance", "FurthestDistance", "ThrowDistance", "MaxThrowDistance" }) do
+		local v = data[k] or P:GetAttribute(k)
+		if type(v) == "number" and v > 0 then
+			return v
+		end
+	end
+	-- Thử tính từ LevelConfig nếu có hàm
+	if LevelConfig then
+		local lvl = data.Level or D:Get("Level") or P:GetAttribute("Level")
+		if type(lvl) == "number" then
+			for _, fnName in ipairs({ "GetMaxDistance", "GetThrowDistance", "DistanceForLevel", "GetDistance" }) do
+				if type(LevelConfig[fnName]) == "function" then
+					local ok, d = pcall(LevelConfig[fnName], lvl)
+					if ok and type(d) == "number" and d > 0 then
+						return d
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+-- Đặt lại lực ném qua Player_SetThrowPower đúng đơn vị của game (0..1 hoặc 1..100)
+local originalPowerValue = nil
+local function setThrowPowerRatio(ratio)
+	local data = getPlayerData()
+	local cur = data.ThrowPower or data.ThrowPowerPercent or P:GetAttribute("ThrowPower")
+	if originalPowerValue == nil and type(cur) == "number" then
+		originalPowerValue = cur
+	end
+	local isPercent = type(cur) == "number" and cur > 1.5
+	local value = isPercent and math.clamp(math.floor(ratio * 100 + 0.5), 1, 100) or math.clamp(ratio, 0.05, 1)
+	callRemote("Player_SetThrowPower", value)
+end
+
+local function restoreThrowPower()
+	if originalPowerValue ~= nil then
+		callRemote("Player_SetThrowPower", originalPowerValue)
+		originalPowerValue = nil
+	end
+end
+
+-- Tìm mục tiêu Index tiếp theo
+local activeIndexPlan = nil
+
+local function computeIndexPlan()
+	local areas = getOrderedAreas()
+	if #areas == 0 then
+		return nil, "Không đọc được AreasConfig"
+	end
+
+	local discovered = getDiscoveredSet()
+	local ownedFoods = getOwnedFoods()
+	local maxDist = getEstimatedMaxDistance()
+	local blockedAreaName = nil
+
+	for _, area in ipairs(areas) do
+		local areaName = area.Name or area.Key or "Unknown"
+		local startDist = area.StartDistance or 0
+		local targetDist = startDist + (area.Length or 0) * 0.45
+		local animals = getAreaAnimals(area)
+
+		for _, animal in ipairs(animals) do
+			local hasIt = discovered[animal.Name] or discovered[string.lower(animal.Name)]
+			if not hasIt then
+				local powerEnough = (maxDist == nil) or (maxDist >= startDist)
+				local foodIdx = findBestOwnedFood(animal, area, ownedFoods)
+
+				if powerEnough and foodIdx then
+					local ratio = 1
+					if maxDist and maxDist > 0 then
+						ratio = math.clamp(targetDist / maxDist, 0.08, 1)
+					end
+					return {
+						Area = area,
+						AreaName = areaName,
+						Animal = animal,
+						FoodIndex = foodIdx,
+						PowerRatio = ratio,
+					}, "Collecting " .. animal.Name .. " (" .. areaName .. ")"
+				else
+					if not blockedAreaName then
+						blockedAreaName = areaName
+					end
+				end
+			end
+		end
+	end
+
+	if blockedAreaName then
+		return nil, "Missing pets in " .. blockedAreaName .. " need more power or a food you own"
+	end
+	return nil, "All index pets collected!"
+end
+
+-- =========================================================
+-- AUTO CLAIM INDEX
+-- =========================================================
+local localClaimedCache = {}
+local claimedCountSession = 0
+
+task.spawn(function()
+	while alive() do
+		if not isOn("autoClaimIndex") then
+			if not state.autoClaimIndex then
+				setStatus("autoClaimIndex", "Off")
+			end
+			task.wait(0.3)
+			continue
+		end
+
+		if not IndexRewardsConfig or type(IndexRewardsConfig.Collections) ~= "table" then
+			setStatus("autoClaimIndex", "No IndexRewardsConfig")
+			waitFeature(3, "autoClaimIndex")
+			continue
+		end
+
+		local claimed = getClaimedSet()
+		local totalCols, doneCols = 0, 0
+
+		for k, col in pairs(IndexRewardsConfig.Collections) do
+			if not isOn("autoClaimIndex") then break end
+			if type(col) == "table" then
+				totalCols += 1
+				local colKey = col.Key or (type(k) == "string" and k) or tostring(k)
+				if claimed[colKey] or localClaimedCache[colKey] then
+					doneCols += 1
+				else
+					local ok, res = callRemote("IndexRewards_Claim", colKey)
+					if ok and (res == true or (type(res) == "table" and (res.Ok or res.Success or res.Claimed))) then
+						localClaimedCache[colKey] = true
+						claimedCountSession += 1
+						doneCols += 1
+						setStatus("autoClaimIndex", "Claimed: " .. tostring(colKey) .. " (" .. doneCols .. "/" .. totalCols .. ")")
+					elseif col.Tab then
+						local ok2, res2 = callRemote("IndexRewards_Claim", col.Tab, colKey)
+						if ok2 and (res2 == true or (type(res2) == "table" and (res2.Ok or res2.Success or res2.Claimed))) then
+							localClaimedCache[colKey] = true
+							claimedCountSession += 1
+							doneCols += 1
+						end
+					end
+					task.wait(0.15)
+				end
+			end
+		end
+
+		if isOn("autoClaimIndex") then
+			if claimedCountSession > 0 then
+				setStatus("autoClaimIndex", "Claimed " .. claimedCountSession .. " | Active (" .. doneCols .. "/" .. totalCols .. ")")
+			else
+				setStatus("autoClaimIndex", "Active (" .. doneCols .. "/" .. totalCols .. ")")
+			end
+		end
+
+		waitFeature(3, "autoClaimIndex")
+	end
+end)
+
+-- Cập nhật kế hoạch Auto Collect Index định kỳ
+task.spawn(function()
+	while alive() do
+		if isOn("autoCollectIndex") then
+			local plan, statusMsg = computeIndexPlan()
+			activeIndexPlan = plan
+			setStatus("autoCollectIndex", statusMsg)
+			if not plan then
+				restoreThrowPower()
+			end
+			waitFeature(1.5, "autoCollectIndex")
+		else
+			if activeIndexPlan ~= nil or originalPowerValue ~= nil then
+				activeIndexPlan = nil
+				restoreThrowPower()
+			end
+			if not state.autoCollectIndex then
+				setStatus("autoCollectIndex", "Off")
+			end
+			task.wait(0.3)
+		end
+	end
+end)
+
+-- =========================================================
+-- VÀO KHU TẬP (KẾT HỢP REMOTE Training_Start + BƯỚC VÀO VÒNG)
+-- =========================================================
+local function isTraining(c, hrp)
+	if not c or not hrp or not hrp.Parent then return false end
+	if hrp.Anchored then return true end
+	if P:GetAttribute("IsTraining") == true or P:GetAttribute("Training") == true then
+		return true
+	end
+	for _, obj in ipairs(playerGui:GetDescendants()) do
+		if not isOwnGui(obj) and (obj:IsA("TextButton") or obj:IsA("TextLabel")) then
+			local raw = string.gsub(obj.Text or "", "<[^>]->", "")
+			local clean = string.gsub(string.lower(raw), "%s+", "")
+			if (clean == "dừng" or clean == "dung" or clean == "stop") and isVisibleOnScreen(obj) then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local stepOffsets = {
+	Vector3.new(0, 2.5, 5),
+	Vector3.new(5, 2.5, 0),
+	Vector3.new(-5, 2.5, 0),
+	Vector3.new(0, 2.5, -5),
+}
+
+local function enterTraining(myPlot, c, h, hrp, maxTries)
+	local spot = myPlot.Position + CFG.Plot.TrainingSpotOffset
+	maxTries = maxTries or 4
+
+	for attempt = 1, maxTries do
+		if not (isOn("autoThrow") or isOn("autoCollectIndex")) or not hrp.Parent or h.Health <= 0 then
+			return false
+		end
+		if isTraining(c, hrp) then
+			return true
+		end
+
+		pcall(function()
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			hrp.AssemblyAngularVelocity = Vector3.zero
+		end)
+
+		if attempt == 1 then
+			hrp.CFrame = CFrame.new(spot + Vector3.new(0, 2, 0))
+			h:MoveTo(spot)
+			callRemote("Training_Start")
+		else
+			local off = stepOffsets[((attempt - 2) % #stepOffsets) + 1]
+			hrp.CFrame = CFrame.new(spot + off, spot)
+			if not waitAnyThrow(0.25) then return false end
+			h:MoveTo(spot)
+			if not waitAnyThrow(0.45) then return false end
+			if not isTraining(c, hrp) then
+				hrp.CFrame = CFrame.new(spot + Vector3.new(0, 2, 0))
+				h:MoveTo(spot)
+				callRemote("Training_Start")
+			end
+		end
+
+		for _ = 1, 6 do
+			if not (isOn("autoThrow") or isOn("autoCollectIndex")) then return false end
+			if isTraining(c, hrp) then return true end
+			task.wait(0.1)
+		end
+	end
+
+	return isTraining(c, hrp)
+end
+
+local function waitReady(myPlot, c, h, hrp)
+	local lastCheck = os.clock()
+	while isOn("autoThrow") or isOn("autoCollectIndex") do
+		if not c.Parent or not hrp.Parent or h.Health <= 0 then
+			return false
+		end
+		local at = P:GetAttribute("ThrowReadyAt")
+		if not at or at - workspace:GetServerTimeNow() <= 0.3 then
+			return true
+		end
+		if os.clock() - lastCheck >= 1.2 then
+			lastCheck = os.clock()
+			if not isTraining(c, hrp) then
+				enterTraining(myPlot, c, h, hrp, 2)
+			end
+		end
+		task.wait(0.1)
+	end
+	return false
+end
+
+-- =========================================================
+-- AUTO MUA & NÂNG CẤP
+-- =========================================================
+task.spawn(function()
+	while alive() do
+		if not isOn("autoUpgrade") then
+			task.wait(0.2)
+			continue
+		end
+
+		local f = math.max(D:Get("EquippedFood") or 1, 1) + 1
+		if Foods.Get(f) then
+			R.Invoke("Shop_Buy", f)
+			-- Không tự trang bị đè nếu Auto Collect Index đang chọn thức ăn câu riêng
+			if not (isOn("autoCollectIndex") and activeIndexPlan ~= nil) then
+				R.Invoke("Shop_Equip", f)
+			end
+		end
+		if not waitFeature(8, "autoUpgrade") then continue end
+
+		local b = (D:Get("Stand") or 0) + 1
+		if Stands.Get(b) then R.Invoke("Stand_Upgrade") end
+		if not waitFeature(1, "autoUpgrade") then continue end
+
+		R.Invoke("Plot_UpgradeFence")
+		waitFeature(1, "autoUpgrade")
+	end
+end)
+
+-- =========================================================
+-- AUTO NÉM & RESET (TÍCH HỢP AUTO COLLECT INDEX)
+-- =========================================================
+task.spawn(function()
+	while alive() do
+		local collectActive = isOn("autoCollectIndex") and activeIndexPlan ~= nil
+		local shouldThrow = isOn("autoThrow") or collectActive
+
+		if not shouldThrow then
+			task.wait(0.2)
+			continue
+		end
+
+		local myPlot = plot()
+		if not myPlot then
+			task.wait(0.5)
+			continue
+		end
+
+		local c = P.Character or P.CharacterAdded:Wait()
+		local h = c:WaitForChild("Humanoid")
+		local hrp = c:WaitForChild("HumanoidRootPart")
+
+		if h.Health <= 0 then
+			task.wait(0.3)
+			continue
+		end
+
+		enterTraining(myPlot, c, h, hrp, 4)
+		if not waitReady(myPlot, c, h, hrp) then continue end
+		if not waitAnyThrow(0.1) then continue end
+
+		-- Áp dụng thức ăn và lực ném nếu đang chạy Auto Collect Index
+		local plan = isOn("autoCollectIndex") and activeIndexPlan or nil
+		if plan then
+			if D:Get("EquippedFood") ~= plan.FoodIndex then
+				pcall(R.Invoke, "Shop_Equip", plan.FoodIndex)
+				task.wait(0.1)
+			end
+			setThrowPowerRatio(plan.PowerRatio)
+			task.wait(0.05)
+		end
+
+		hrp.CFrame = lineCFrame()
+		task.wait()
+		if not (isOn("autoThrow") or (isOn("autoCollectIndex") and activeIndexPlan ~= nil)) then continue end
+
+		local st = R.Invoke("Throw_Start")
+		if type(st) == "table" and st.Ok then
+			-- Lưu lại tầm ném tối đa nếu server trả về
+			local distVal = st.MaxDistance or st.Distance or st.MaxRange
+			if type(distVal) == "number" and distVal > 0 and (not plan or plan.PowerRatio >= 0.99) then
+				observedMaxDistance = distVal
+			end
+
+			local rs = R.Invoke("Throw_Resolve", 1)
+			if type(rs) == "table" and rs.Ok then
+				local resolvedDist = rs.Distance or rs.MaxDistance
+				if type(resolvedDist) == "number" and resolvedDist > 0 and (not plan or plan.PowerRatio >= 0.99) then
+					observedMaxDistance = math.max(observedMaxDistance or 0, resolvedDist)
+				end
+
+				if not waitAnyThrow(0.4) then continue end
+				h.Health = 0
+				local newChar = P.CharacterAdded:Wait()
+				newChar:WaitForChild("HumanoidRootPart", 5)
+				waitAnyThrow(0.6)
+			end
+		else
+			waitAnyThrow(0.5)
+		end
+	end
+end)
+
+-- =========================================================
+-- AUTO EQUIP & BÁN
+-- =========================================================
+task.spawn(function()
+	while alive() do
+		if not isOn("autoSell") then
+			task.wait(0.2)
+			continue
+		end
+
+		R.Invoke("Plot_EquipBest")
+		if not waitFeature(0.5, "autoSell") then continue end
+		R.Invoke("Plot_SellAll")
+		waitFeature(5.5, "autoSell")
+	end
+end)
+
+-- =========================================================
+-- ANTI-AFK CHẠY NỀN
+-- =========================================================
+task.spawn(function()
+	task.wait(2)
+	if getconnections then
+		pcall(function()
+			for _, conn in pairs(getconnections(P.Idled)) do
+				if conn.Disable then conn:Disable()
+				elseif conn.Disconnect then conn:Disconnect() end
+			end
+		end)
+	end
+	pcall(function()
+		trackConn(P.Idled:Connect(function()
+			VirtualUser:CaptureController()
+			VirtualUser:ClickButton2(Vector2.new())
+		end))
+	end)
+end)
+
+-- =========================================================
+-- AUTO TAP X2 (BẮT CẢ UI NỔI LẪN REMOTE)
+-- =========================================================
+local lastTapAt = setmetatable({}, { __mode = "k" })
+
+local function isX2Popup(obj)
+	if isOwnGui(obj) then return false end
+	if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+		local raw = string.gsub(obj.Text or "", "<[^>]->", "")
+		local clean = string.gsub(string.lower(raw), "%s+", "")
+		if clean == "x2" or clean == "2x" then
+			return true
+		end
+	end
+	local lowerName = string.lower(obj.Name)
+	if obj:IsA("GuiButton") and (string.find(lowerName, "bonus") or string.find(lowerName, "tapx2")) then
+		return true
+	end
+	return false
+end
+
+local function findClickableTarget(obj)
+	local cur = obj
+	for _ = 1, 5 do
+		if not cur or cur:IsA("ScreenGui") then break end
+		if cur:IsA("GuiButton") then return cur end
+		cur = cur.Parent
+	end
+	local parent = obj.Parent
+	if parent and parent:IsA("GuiObject") and parent.AbsoluteSize.X <= 300 and parent.AbsoluteSize.Y <= 300 then
+		return parent
+	end
+	return obj
+end
+
+local function tapTarget(target)
+	if not isVisibleOnScreen(target) then return end
+	local now = os.clock()
+	if lastTapAt[target] and now - lastTapAt[target] < 0.18 then return end
+	lastTapAt[target] = now
+
+	local firedBySignal = false
+	if target:IsA("GuiButton") and type(getconnections) == "function" then
+		for _, sig in ipairs({ target.Activated, target.MouseButton1Down, target.MouseButton1Click }) do
+			pcall(function()
+				for _, conn in ipairs(getconnections(sig)) do
+					if conn.Fire then
+						conn:Fire()
+						firedBySignal = true
+					elseif conn.Function then
+						task.spawn(conn.Function)
+						firedBySignal = true
+					end
+				end
+			end)
+		end
+	end
+
+	if not firedBySignal and VIM then
+		local sg = target:FindFirstAncestorOfClass("ScreenGui")
+		local inset = (sg and sg.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
+		local center = target.AbsolutePosition + target.AbsoluteSize / 2 + inset
+		pcall(function()
+			VIM:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 1)
+			task.wait(0.03)
+			VIM:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 1)
+		end)
+	end
+end
+
+trackConn(playerGui.DescendantAdded:Connect(function(obj)
+	if not isOn("autoTapX2") then return end
+	if isX2Popup(obj) then
+		task.defer(function()
+			if isOn("autoTapX2") then
+				tapTarget(findClickableTarget(obj))
+			end
+		end)
+	end
+end))
+
+task.spawn(function()
+	while alive() do
+		if isOn("autoTapX2") then
+			for _, obj in ipairs(playerGui:GetDescendants()) do
+				if isX2Popup(obj) and isVisibleOnScreen(obj) then
+					tapTarget(findClickableTarget(obj))
+				end
+			end
+			task.wait(0.1)
+		else
+			task.wait(0.25)
+		end
+	end
+end)
+
+local bonusId = nil
+local function extractBonusId(arg)
+	if type(arg) == "table" then
+		return arg.Id or arg.id or arg.BonusId or arg.bonusId or arg[1]
+	end
+	return arg
+end
+
+trackConn(R.Event("Training_Bonus").OnClientEvent:Connect(function(data)
+	local id = extractBonusId(data)
+	bonusId = id
+	if isOn("autoTapX2") and id ~= nil then
+		task.spawn(function()
+			pcall(R.Invoke, "Training_TapBonus", id)
+		end)
+	end
+end))
+
+task.spawn(function()
+	while alive() do
+		if isOn("autoTapX2") and bonusId ~= nil then
+			pcall(R.Invoke, "Training_TapBonus", bonusId)
+			task.wait(0.2)
+		else
+			task.wait(0.25)
+		end
+	end
+end)
